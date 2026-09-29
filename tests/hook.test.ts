@@ -325,3 +325,47 @@ describe('registered compaction hooks', () => {
     await afterRelease;
   });
 });
+
+describe('auto-compaction at compactAtPercent', () => {
+  function turnEnd(compact: () => Promise<unknown>) {
+    const hooks: Record<string, (...args: any[]) => Promise<any>> = {};
+    register(((name: string, hook: any) => void (hooks[name] = hook)) as never, { compactAtPercent: 50 } as never);
+    const commands: string[] = [];
+    const log: string[] = [];
+    const $ = {
+      session: { usage: async () => ({ context: { percent: 80 } }), compact },
+      command: { run: async (input: { command: string }) => (commands.push(input.command), { text: '' }) },
+      ui: { log: (text: string) => log.push(text) },
+    };
+    const run = () => hooks['turn.complete']!($, { reason: 'answer' }, async () => ({ text: 'answer' }));
+    return { run, commands, log };
+  }
+
+  it('compacts through $.session.compact where the host has it', async () => {
+    let compacted = 0;
+    const t = turnEnd(async () => (compacted += 1, { messages: [] }));
+    expect(await t.run()).toEqual({ text: 'answer' });
+    expect(compacted).toBe(1);
+    expect(t.commands).toEqual([]);
+  });
+
+  it('queues /compact where a headless (SDK) session refuses $.session.compact', async () => {
+    const t = turnEnd(async () => {
+      throw new Error(
+        'fast-jev-compaction: $.session.compact: not available in a headless (-p / SDK) session yet: compaction here runs inside a turn (a /compact prompt); catch it and carry on',
+      );
+    });
+    expect(await t.run()).toEqual({ text: 'answer' });
+    expect(t.commands).toEqual(['compact']);
+    expect(t.log).toEqual([]);
+  });
+
+  it('only logs any other refusal', async () => {
+    const t = turnEnd(async () => {
+      throw new Error('rejects while a turn runs');
+    });
+    await t.run();
+    expect(t.commands).toEqual([]);
+    expect(t.log).toEqual(['auto-compact skipped (rejects while a turn runs)']);
+  });
+});

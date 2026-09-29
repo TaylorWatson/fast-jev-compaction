@@ -319,6 +319,11 @@ function notify(
   }
 }
 
+/** The host's refusal of `$.session.compact` in a headless (-p / SDK) session. */
+export function isHeadlessRefusal(error: unknown): boolean {
+  return error instanceof Error && error.message.includes('not available in a headless');
+}
+
 export const register: Register = (on: On, options: PluginOptions) => {
   const configured = resolveHookConfig(options);
   let compacting = false;
@@ -372,6 +377,12 @@ export const register: Register = (on: On, options: PluginOptions) => {
       if ((context.percent ?? 0) < configured.compactAtPercent) return next(event);
       await $.session.compact();
     } catch (error) {
+      if (isHeadlessRefusal(error)) {
+        void $.command.run({ command: 'compact' }).catch((queued: unknown) =>
+          log($, `auto-compact skipped (${queued instanceof Error ? queued.message : String(queued)})`),
+        );
+        return next(event);
+      }
       log($,
         `auto-compact skipped (${error instanceof Error ? error.message : String(error)})`,
       );
