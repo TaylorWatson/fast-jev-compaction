@@ -31,6 +31,7 @@
     "demo": "tsx examples/demo.ts",
     "typecheck:hooks": "tsc -p tsconfig.hooks.json",
     "validate:plugin": "claude plugin validate .claude-plugin/plugin.json",
+    "prepare": "npm run build",
     "prepack": "npm run build"
   },
   "devDependencies": {
