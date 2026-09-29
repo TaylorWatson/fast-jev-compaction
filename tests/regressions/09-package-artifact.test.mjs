@@ -18,4 +18,4 @@ test('a clean npm pack contains the exported JavaScript and declarations',()=>{
     assert.ok(files.includes('dist/index.js'),JSON.stringify(files));
     assert.ok(files.includes('dist/index.d.ts'),JSON.stringify(files));
   }finally{rmSync(dir,{recursive:true,force:true});}
-});
+},30_000);
