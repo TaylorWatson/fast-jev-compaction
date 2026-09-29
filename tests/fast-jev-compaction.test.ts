@@ -11,6 +11,7 @@ import {
   fitState,
   JevClient,
   parseJevResponse,
+  questionsFor,
   reductionRatio,
   resolveOptions,
   type HistoryToolCall,
@@ -438,15 +439,19 @@ describe('compact', () => {
   it('resends the full state with every batch and merges the answers', async () => {
     const seen: Seen[] = [];
     const messages = transcript();
-    const stateTokens = fitState(messages, collectToolCalls(messages, 1), {
+    const calls = collectToolCalls(messages, 1);
+    const stateTokens = fitState(messages, calls, {
       ...fit,
       goal: '',
       preserveRecentMessages: 1,
     }).tokens;
+    const perCall = Math.max(
+      ...calls.map((call) => estimateTokens(JSON.stringify(questionsFor(call)))),
+    );
     const output = await compact(
       messages,
       fakeJev((name) => (name.startsWith('call_') ? 0.9 : 0.1), seen),
-      { preserveRecentMessages: 1, maxRequestTokens: stateTokens + 150 },
+      { preserveRecentMessages: 1, maxRequestTokens: stateTokens + perCall + 25 },
     );
 
     expect(output.stats.requests).toBe(seen.length);
