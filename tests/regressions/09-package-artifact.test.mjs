@@ -1,10 +1,11 @@
-import test from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 
 import {mkdtempSync,cpSync,existsSync,symlinkSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';import {join} from 'node:path';import {spawnSync} from 'node:child_process';
+import {repoRoot} from './helpers.mjs';
 test('a clean npm pack contains the exported JavaScript and declarations',()=>{
-  const source=process.env.FJC_TEST_SOURCE;const dir=mkdtempSync(join(tmpdir(),'jev-pack-'));
+  const source=repoRoot;const dir=mkdtempSync(join(tmpdir(),'jev-pack-'));
   try{
     for(const file of ['src','package.json','tsconfig.json','README.md','LICENSE'])if(existsSync(join(source,file)))cpSync(join(source,file),join(dir,file),{recursive:true});
     symlinkSync(join(source,'node_modules'),join(dir,'node_modules'),process.platform==='win32'?'junction':'dir');

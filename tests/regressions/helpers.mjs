@@ -1,8 +1,8 @@
+import { fileURLToPath } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
-const build = process.env.FJC_TEST_BUILD;
-if (!build) throw new Error('Run node scripts/test-regressions.mjs');
-export const core = await import(new URL('src/index.js', build));
-export const hook = await import(new URL('hooks/fast-jev.js', build));
+export const core = await import('../../src/index.ts');
+export const hook = await import('../../hooks/fast-jev.ts');
+export const repoRoot = fileURLToPath(new URL('../../', import.meta.url));
 export { sleep };
 export const message = (role, text = '', extra = {}) => ({ role, text, toolUses: [], ...extra });
 export const call = (id, tool = 'Read', input = { file_path: 'report.txt' }) => message('assistant', '', {

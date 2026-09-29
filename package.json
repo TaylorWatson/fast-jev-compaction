@@ -25,7 +25,6 @@
     "demo": "tsx examples/demo.ts",
     "typecheck:hooks": "tsc -p tsconfig.hooks.json",
     "validate:plugin": "claude plugin validate .claude-plugin/plugin.json",
-    "test:regressions": "node scripts/test-regressions.mjs",
     "prepack": "npm run build"
   },
   "devDependencies": {
