@@ -163,7 +163,8 @@ stage was needed, and the number of requests.
 ## Claude Code plugin
 
 The repository root is a Claude Code function-hook plugin: `hooks/fast-jev.ts`
-is a thin adapter that feeds `session.compact` transcripts through `src/` and
+is a thin adapter that feeds `session.compact` transcripts through `src/` and,
+when Claude Code's own automatic compaction has to shrink the conversation,
 falls back to Claude Code's built-in summary on errors or insufficient
 reduction. See [`hooks/README.md`](hooks/README.md) for configuration and the
 Claude Code 2.1.274 type reference.
@@ -173,8 +174,9 @@ hook can return replacement `messages`. This is distinct from command hooks
 such as `PreCompact` and `PostCompact`; those hooks alone do not return the
 replacement messages this plugin needs. The host must support and load the
 function-hook interface. If it is unavailable, this plugin cannot replace the
-summary; if a loaded hook errors or removes too little, it delegates to the
-normal summary.
+summary; if a loaded hook errors or removes too little, Claude Code's own
+automatic compaction falls back to the normal summary and a `/compact` leaves
+the conversation as it is (see `builtinFallback`).
 
 ### Install in Claude Code
 
@@ -198,8 +200,11 @@ The install prompts for the plugin options (API key, thresholds, `truncateHeadCh
 Restart Claude Code or run `/reload-plugins`. From then on `/compact` (and
 auto-compaction) goes through Jev: the toast reads
 `fast-jev-compaction: kept N/M messages, no summary (…)` when the pruned history
-replaced the built-in summary, or `fallback to built-in summary (…)` when Jev
-could not remove enough (short sessions, or when it fails).
+replaced the built-in summary. When Jev could not remove enough (short
+sessions, or when it fails) it reads `fallback to built-in summary (…)` during
+Claude Code's automatic compaction, and `not compacted, no built-in summary (…)`
+on `/compact` or the plugin's own request, which leave the conversation as it
+is; `builtinFallback` changes which compactions fall back.
 
 To run from a checkout without installing: `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir .`
 from the repository root. No publishing step is required; the marketplace is

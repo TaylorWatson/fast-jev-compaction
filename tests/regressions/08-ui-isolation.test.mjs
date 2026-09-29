@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import {handlers,host,transcript} from './helpers.mjs';
 for(const method of ['log','toast']) test('missing-key fallback survives '+method+' failure',async()=>{
   const h=handlers(),$=host();$.ui[method]=()=>{throw Error('UI unavailable');};let calls=0;const expected={native:true};
-  const result=await h['session.compact']($,{messages:transcript()},async()=>{calls++;return expected;});
+  const result=await h['session.compact']($,{trigger:'auto',messages:transcript()},async()=>{calls++;return expected;});
   assert.equal(result,expected);assert.equal(calls,1);
 });
 for(const method of ['log','toast']) test('successful compaction survives '+method+' failure',async()=>{
@@ -18,5 +18,5 @@ test('auto-compaction logging cannot swallow event continuation',async()=>{
 });
 test('native fallback rejection is propagated without invoking it twice',async()=>{
   const h=handlers(),$=host();let next=0;
-  await assert.rejects(h['session.compact']($,{messages:[]},async()=>{next++;throw Error('native failed');}),/native failed/);assert.equal(next,1);
+  await assert.rejects(h['session.compact']($,{trigger:'auto',messages:[]},async()=>{next++;throw Error('native failed');}),/native failed/);assert.equal(next,1);
 });
