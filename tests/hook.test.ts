@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  archiveWriter,
   compactSession,
   decisionLog,
   decisionLogLines,
@@ -95,6 +96,11 @@ function jevFetch(answer: (name: string) => number, bodies: string[] = []) {
 describe('hook config', () => {
   it('reads userConfig values and falls back to defaults', () => {
     expect(resolveHookConfig({})).toEqual({
+      archiveResults: false,
+      bashOutput: false,
+      bashOutputMinChars: 4_000,
+      bashOutputChunkLines: 20,
+      bashOutputKeepThreshold: 0.1,
       compactAtPercent: 60,
       minReductionRatio: 0.25,
       model: 'jev-latest',
@@ -112,6 +118,11 @@ describe('hook config', () => {
       }),
     ).toEqual({
       apiKey: 'k',
+      archiveResults: false,
+      bashOutput: false,
+      bashOutputMinChars: 4_000,
+      bashOutputChunkLines: 20,
+      bashOutputKeepThreshold: 0.1,
       keepThreshold: 0.3,
       maxStateTokens: 1000,
       model: 'jev-x',
@@ -573,5 +584,87 @@ describe('retries and interrupts in the hook', () => {
     );
     expect(out).toEqual({ skip: 'fast-jev-compaction: interrupted' });
     expect(notices.at(-1)).toBe('compaction interrupted; nothing changed');
+  });
+});
+
+describe('archiveWriter', () => {
+  const fsStub = () => {
+    const files = new Map<string, string>();
+    return {
+      files,
+      fs: {
+        exists: async (path: string) => files.has(path),
+        write: async (path: string, text: string) => void files.set(path, text),
+      },
+    };
+  };
+
+  it('names a file per truncated result and writes them on flush, with a .gitignore', async () => {
+    const stub = fsStub();
+    const writer = archiveWriter(stub);
+    const path = writer.cite('toolu_1', 'a'.repeat(5000));
+    expect(path).toBe('.claude/fast-jev-compaction/result-toolu_1.txt');
+    expect(stub.files.size).toBe(0);
+    await writer.flush();
+    expect(stub.files.get('.claude/fast-jev-compaction/.gitignore')).toBe('*\n');
+    expect(stub.files.get(path!)?.length).toBe(5000);
+  });
+
+  it('never writes output that looks like credentials', async () => {
+    const stub = fsStub();
+    const writer = archiveWriter(stub);
+    expect(writer.cite('toolu_2', 'AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG')).toBeUndefined();
+    await writer.flush();
+    expect(stub.files.size).toBe(0);
+  });
+
+  it('writes nothing when no result was cited', async () => {
+    const stub = fsStub();
+    await archiveWriter(stub).flush();
+    expect(stub.files.size).toBe(0);
+  });
+});
+
+describe('Bash output trimming', () => {
+  function bashHost(score: number) {
+    const files = new Map<string, string>();
+    const logs: string[] = [];
+    const $ = {
+      env: { get: async () => 'k' },
+      settings: { read: async () => ({}) },
+      http: { fetch: jevFetch(() => score) },
+      ui: { log: (text: string) => logs.push(text), toast: () => {} },
+      session: { messages: async () => [message('user', 'build the app')] },
+      fs: {
+        exists: async (path: string) => files.has(path),
+        write: async (path: string, text: string) => void files.set(path, text),
+      },
+    };
+    return { $, files, logs };
+  }
+  const noisy = Array.from({ length: 400 }, (_, i) => `downloading package ${i} of 400`).join('\n');
+
+  it('is not registered unless bashOutput is on', () => {
+    expect(registeredHooks({}).get('tool.call')).toBeUndefined();
+  });
+
+  it('trims long output and saves the full text in the project', async () => {
+    const { $, files } = bashHost(0.01);
+    const handler = registeredHooks({ bashOutput: true }).get('tool.call')!;
+    const out = await handler($, { command: 'npm install', tool_use_id: 'toolu_9' }, async () => ({
+      result: { stdout: noisy, stderr: '' },
+    }));
+    const stdout = (out as { result: { stdout: string } }).result.stdout;
+    expect(stdout.length).toBeLessThan(noisy.length);
+    expect(stdout).toContain('full output: .claude/fast-jev-compaction/bash-toolu_9.txt');
+    expect(files.get('.claude/fast-jev-compaction/bash-toolu_9.txt')).toBe(noisy);
+  });
+
+  it('leaves output alone and writes nothing when Jev keeps every chunk', async () => {
+    const { $, files } = bashHost(0.5);
+    const answer = { result: { stdout: noisy, stderr: '' } };
+    const out = await registeredHooks({ bashOutput: true }).get('tool.call')!($, { command: 'npm install' }, async () => answer);
+    expect(out).toBe(answer);
+    expect(files.size).toBe(0);
   });
 });

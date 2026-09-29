@@ -82,6 +82,36 @@
       "description": "After its retries, a request batch that still fails either fails the whole compaction (throw) or keeps every call of that batch whole while the other batches' answers apply (keep).",
       "default": "throw"
     },
+    "archiveResults": {
+      "type": "boolean",
+      "title": "Save truncated tool results",
+      "description": "Write tool results that compaction truncates to .claude/fast-jev-compaction/ and cite the file in their note, so they can be read back.",
+      "default": false
+    },
+    "bashOutput": {
+      "type": "boolean",
+      "title": "Trim Bash output",
+      "description": "Trim long Bash output with Jev before the model sees it; the full output is saved to .claude/fast-jev-compaction/.",
+      "default": false
+    },
+    "bashOutputMinChars": {
+      "type": "number",
+      "title": "Minimum Bash output characters",
+      "description": "Bash outputs at or below this length pass through untouched.",
+      "default": 4000
+    },
+    "bashOutputChunkLines": {
+      "type": "number",
+      "title": "Bash output chunk lines",
+      "description": "Number of Bash output lines grouped into each Jev chunk.",
+      "default": 20
+    },
+    "bashOutputKeepThreshold": {
+      "type": "number",
+      "title": "Bash output keep threshold",
+      "description": "Minimum Jev probability that a Bash output chunk is still needed; below it the chunk is replaced by a marker.",
+      "default": 0.1
+    },
     "model": {
       "type": "string",
       "title": "Jev model",

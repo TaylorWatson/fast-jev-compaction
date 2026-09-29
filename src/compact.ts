@@ -6,6 +6,7 @@ import {
   truncationNote,
 } from './state.js';
 import type {
+  ArchiveResult,
   CallAnswer,
   CallDecision,
   CompactOptions,
@@ -291,16 +292,22 @@ function splitsSurrogatePair(text: string, index: number): boolean {
   return before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff;
 }
 
-function truncatedResultText(text: string, isError: boolean, headChars: number): string {
+function truncatedResultText(
+  text: string,
+  isError: boolean,
+  headChars: number,
+  archive: (() => string | undefined) | undefined,
+): string {
   if (text.length <= headChars + 120) return text;
   const cut = splitsSurrogatePair(text, headChars) ? headChars - 1 : headChars;
   const head = cut > 0 ? `${text.slice(0, cut)}\n` : '';
-  return `${head}${truncationNote(text.length - cut, isError)}`;
+  return `${head}${truncationNote(text.length - cut, isError, archive?.())}`;
 }
 
 /**
  * Rebuilds the conversation from the decisions. A dropped call disappears
- * together with its result; a dropped result keeps a bounded head and note.
+ * together with its result; a dropped result keeps a bounded head and note,
+ * citing where `archive` saved the full text when one is given.
  * Messages that lose all their content are removed; untouched messages are
  * returned as the same objects they came in as.
  */
@@ -309,6 +316,7 @@ export function applyDecisions(
   decisions: readonly CallDecision[],
   calls: readonly ToolCall[],
   headChars: number,
+  archive?: ArchiveResult,
 ): Message[] {
   const byId = new Map(calls.map((call) => [call.id, call]));
   const actions = new Map<string, CallDecision['action']>();
@@ -333,6 +341,7 @@ export function applyDecisions(
           tool.text ?? '',
           tool.isError ?? false,
           headChars,
+          archive && (() => archive(tool.tool_use_id, tool.text ?? '')),
         );
         if ((tool.text ?? '') === text) return tool;
         const copy: ToolUse = {
@@ -348,7 +357,12 @@ export function applyDecisions(
       .filter((result) => actions.get(result.tool_use_id) !== 'drop_call')
       .map((result) => {
         if (actions.get(result.tool_use_id) !== 'drop_result') return result;
-        const text = truncatedResultText(result.text, result.isError ?? false, headChars);
+        const text = truncatedResultText(
+          result.text,
+          result.isError ?? false,
+          headChars,
+          archive && (() => archive(result.tool_use_id, result.text)),
+        );
         return text === result.text
           ? result
           : {
@@ -465,6 +479,7 @@ export async function compact(
     decisions,
     calls,
     resolved.truncateHeadChars,
+    options.archive,
   );
   return {
     messages: kept,

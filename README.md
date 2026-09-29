@@ -153,6 +153,7 @@ put it in a source file.
 | `retryDelayMs` | `500` | Wait before the first retry, tripled on each further one |
 | `onBatchFailure` | `throw` | `throw` rejects the compaction when a batch fails after its retries; `keep` leaves that batch whole and applies the rest |
 | `sleep` | `setTimeout` | Injectable wait between retries, for hosts without a timer |
+| `archive` | none | Called for each result that is actually truncated; the returned path is cited in its note |
 
 `result.stats` reports message and character counts before and after, the
 per-reason decision counts, the state size in estimated tokens, which fitting
@@ -178,6 +179,16 @@ when Claude Code's own automatic compaction has to shrink the conversation,
 falls back to Claude Code's built-in summary on errors or insufficient
 reduction. See [`hooks/README.md`](hooks/README.md) for configuration and the
 Claude Code 2.1.274 type reference.
+
+The plugin can also trim long Bash output before it reaches the model
+(`bashOutput`, off by default). Jev scores 20-line chunks; the first and last
+chunks, chunks that look like errors, JSON, diffs and whole-file commands such
+as `cat`, `jq` or `git diff` are never trimmed, and each discarded run becomes
+a marker pointing to the full output saved under the project's
+`.claude/fast-jev-compaction/` directory (ignored by a local `.gitignore`).
+Output that looks like credentials is trimmed but never saved. With
+`archiveResults` (also off by default), tool results that compaction truncates
+are saved there too and their note cites the file.
 
 Replacement depends on the early-access function event `session.compact`, whose
 hook can return replacement `messages`. This is distinct from command hooks
@@ -215,6 +226,15 @@ sessions, or when it fails) it reads `fallback to built-in summary (…)` during
 Claude Code's automatic compaction, and `not compacted, no built-in summary (…)`
 on `/compact` or the plugin's own request, which leave the conversation as it
 is; `builtinFallback` changes which compactions fall back.
+
+To turn on Bash output trimming, run `/plugin configure fast-jev-compaction`
+inside Claude Code, or set it in `~/.claude/settings.json`:
+
+```json
+{ "pluginConfigs": { "fast-jev-compaction@fast-jev-compaction": { "options": { "bashOutput": true } } } }
+```
+
+then `/reload-plugins`.
 
 To run from a checkout without installing: `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir .`
 from the repository root. No publishing step is required; the marketplace is

@@ -1,3 +1,6 @@
+/** Saves a tool result that is about to be truncated; returns the path to cite in its note. */
+export type ArchiveResult = (toolUseId: string, text: string) => string | undefined;
+
 export type Role = 'user' | 'assistant';
 
 /**
@@ -99,6 +102,8 @@ export interface FittedState {
 }
 
 export interface CompactOptions {
+  /** Called for each tool result that is actually truncated; the returned path is cited in its note. */
+  archive?: ArchiveResult;
   /** Ongoing task description; defaults to the last few user prompts. */
   goal?: string;
   /** Minimum keep probability for a tool *result* to stay verbatim. Default 0.15: a Noul of 0.5 means "unsure". */

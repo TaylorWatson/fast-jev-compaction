@@ -722,3 +722,43 @@ describe('retries and batch failures', () => {
     ).rejects.toBe(failure);
   });
 });
+
+describe('archiving truncated results', () => {
+  const long = 'x'.repeat(9000);
+  function pair(): Message[] {
+    return [
+      message('user', 'read the log'),
+      call('t1', 'Bash', { command: "sed -n '1,300p' server.log" }, long),
+      result('t1', long),
+    ];
+  }
+
+  it('saves a truncated result and cites the file in its note', () => {
+    const messages = pair();
+    const calls = collectToolCalls(messages, 0);
+    const decisions = calls.map((c) => decideCall(c, { keepCall: 0.9, keepResult: 0 }, resolveOptions()));
+    const archived: string[] = [];
+    const kept = applyDecisions(messages, decisions, calls, 300, (id, text) => {
+      archived.push(`${id}:${text.length}`);
+      return `.claude/fast-jev-compaction/result-${id}.txt`;
+    });
+    const note = kept[2]!.toolResults![0]!.text;
+    expect(note).toMatch(/full output: \.claude\/fast-jev-compaction\/result-t1\.txt \(Read or grep it if needed\)\]$/);
+    expect(truncatedResult(note)).toEqual({ cut: 8700, head: 300, original: 9000 });
+    expect(archived).toEqual(['t1:9000', 't1:9000']);
+  });
+
+  it('archives nothing for a dropped call, a kept result or a result too short to cut', () => {
+    const archived: string[] = [];
+    const archive = (id: string) => (archived.push(id), `saved-${id}`);
+    const messages = pair();
+    const calls = collectToolCalls(messages, 0);
+    const dropped = applyDecisions(messages, calls.map((c) => decideCall(c, { keepCall: 0, keepResult: 0 }, resolveOptions())), calls, 300, archive);
+    expect(dropped.map((m) => m.text)).toEqual(['read the log']);
+    applyDecisions(messages, calls.map((c) => decideCall(c, { keepCall: 1, keepResult: 1 }, resolveOptions())), calls, 300, archive);
+    const short = [message('user', 'go'), call('t2', 'Read', {}, 'short'), result('t2', 'short')];
+    const shortCalls = collectToolCalls(short, 0);
+    applyDecisions(short, shortCalls.map((c) => decideCall(c, { keepCall: 1, keepResult: 0 }, resolveOptions())), shortCalls, 300, archive);
+    expect(archived).toEqual([]);
+  });
+});

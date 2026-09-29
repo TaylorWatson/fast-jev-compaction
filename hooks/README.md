@@ -69,6 +69,11 @@ The plugin declares these `userConfig` values in
 | `retries` | `2` |
 | `retryDelayMs` | `500` |
 | `onBatchFailure` | `throw` |
+| `archiveResults` | `false` |
+| `bashOutput` | `false` |
+| `bashOutputMinChars` | `4000` |
+| `bashOutputChunkLines` | `20` |
+| `bashOutputKeepThreshold` | `0.1` |
 | `model` | `jev-latest` |
 
 The TypeSafe key can be supplied as the sensitive `apiKey` plugin option or
@@ -98,7 +103,16 @@ nothing is replaced and no summary runs.
 The outcome is shown as a toast and logged with the
 reduction, per-reason counts, state size and request count; a per-call
 `decisions:` line with both probabilities is logged for diagnosis. The
-`turn.complete` hook requests
+`tool.call` hook trims long Bash stdout before it reaches the model when
+`bashOutput` is on. It keeps the chunks whose Jev score reaches
+`bashOutputKeepThreshold` verbatim, saves the combined stdout and stderr under
+`.claude/fast-jev-compaction/`, and replaces each run of discarded chunks with
+a marker pointing to that file. Output of `bashOutputMinChars` or less passes
+through, and if Jev fails the Bash result passes through unchanged.
+`archiveResults` saves tool results that compaction truncates to the same
+directory and cites the file in their note.
+
+The `turn.complete` hook requests
 compaction when `context.percent` reaches `compactAtPercent`, with an
 in-flight guard. When that request is skipped, the hook waits until the
 context has grown by another 10 percentage points, or dropped below

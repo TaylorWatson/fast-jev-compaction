@@ -127,14 +127,17 @@ export function isPinned(
 }
 
 /** The note a truncated tool result ends with; `truncatedResult` reads it back. */
-export function truncationNote(cut: number, isError: boolean): string {
+export function truncationNote(cut: number, isError: boolean, archivedPath?: string): string {
+  const where = archivedPath
+    ? `full output: ${archivedPath} (Read or grep it if needed)`
+    : 're-run the tool if needed';
   return `[fast-jev-compaction truncated ${cut} chars of this tool result${
     isError ? ' (error)' : ''
-  }; re-run the tool if needed]`;
+  }; ${where}]`;
 }
 
 const TRUNCATED_NOTE =
-  /\[fast-jev-compaction truncated (\d+) chars of this tool result(?: \(error\))?; re-run the tool if needed\]$/;
+  /\[fast-jev-compaction truncated (\d+) chars of this tool result(?: \(error\))?; (?:re-run the tool if needed|full output: \S+ \(Read or grep it if needed\))\]$/;
 
 /**
  * What an earlier round left of a result, read off its note: the characters

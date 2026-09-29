@@ -11,6 +11,7 @@ import type {
 import { compact, reductionBound, reductionRatio, resolveOptions } from '../src/compact.js';
 import { buildJevRequest, DEFAULT_MODEL, JevTransportError, parseJevResponse } from '../src/request.js';
 import { goalFromMessages } from '../src/state.js';
+import { trimOutput } from '../src/output.js';
 import type {
   CompactOptions,
   CompactResult,
@@ -29,6 +30,11 @@ import type {
 export type BuiltinFallback = 'auto' | 'always' | 'never';
 
 const HOOK_DEFAULTS = {
+  archiveResults: false,
+  bashOutput: false,
+  bashOutputMinChars: 4_000,
+  bashOutputChunkLines: 20,
+  bashOutputKeepThreshold: 0.1,
   compactAtPercent: 60,
   minReductionRatio: 0.25,
   model: DEFAULT_MODEL,
@@ -59,6 +65,11 @@ export type HookFetch = (url: string, init?: HookFetchInit) => Promise<HookFetch
 
 export type HookConfig = CompactOptions & {
   apiKey?: string;
+  archiveResults: boolean;
+  bashOutput: boolean;
+  bashOutputMinChars: number;
+  bashOutputChunkLines: number;
+  bashOutputKeepThreshold: number;
   compactAtPercent: number;
   minReductionRatio: number;
   model: string;
@@ -68,6 +79,11 @@ export type HookConfig = CompactOptions & {
 function optionNumber(options: PluginOptions, key: string, fallback: number): number {
   const value = options[key];
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+}
+
+function optionBoolean(options: PluginOptions, key: string, fallback: boolean): boolean {
+  const value = options[key];
+  return typeof value === 'boolean' ? value : fallback;
 }
 
 function optionString(options: PluginOptions, key: string): string | undefined {
@@ -113,6 +129,19 @@ export function resolveHookConfig(options: PluginOptions): HookConfig {
   }
   const config: HookConfig = {
     ...numbers,
+    archiveResults: optionBoolean(options, 'archiveResults', HOOK_DEFAULTS.archiveResults),
+    bashOutput: optionBoolean(options, 'bashOutput', HOOK_DEFAULTS.bashOutput),
+    bashOutputMinChars: optionNumber(options, 'bashOutputMinChars', HOOK_DEFAULTS.bashOutputMinChars),
+    bashOutputChunkLines: optionNumber(
+      options,
+      'bashOutputChunkLines',
+      HOOK_DEFAULTS.bashOutputChunkLines,
+    ),
+    bashOutputKeepThreshold: optionNumber(
+      options,
+      'bashOutputKeepThreshold',
+      HOOK_DEFAULTS.bashOutputKeepThreshold,
+    ),
     compactAtPercent: optionNumber(options, 'compactAtPercent', HOOK_DEFAULTS.compactAtPercent),
     minReductionRatio: optionNumber(
       options,
@@ -251,14 +280,65 @@ export async function compactSession(
   config: HookConfig,
   fetchFn: HookFetch,
   sleep?: Sleep,
+  archive?: ArchiveWriter,
 ): Promise<SessionCompaction> {
   if (!config.apiKey) throw new Error('TYPESAFE_API_KEY is not configured');
-  const result = await compact(
-    messages,
-    jevAsker(fetchFn, config.apiKey, config.model),
-    sleep ? { ...config, sleep } : config,
-  );
+  const result = await compact(messages, jevAsker(fetchFn, config.apiKey, config.model), {
+    ...config,
+    ...(sleep ? { sleep } : {}),
+    ...(archive ? { archive: archive.cite } : {}),
+  });
+  if (archive) await archive.flush();
   return { result, messages: toSessionMessages(messages, result.messages) };
+}
+
+const ARCHIVE_DIR = '.claude/fast-jev-compaction';
+
+export type ArchiveWriter = {
+  /** Names the file a truncated result will be written to, for its note. */
+  cite: (toolUseId: string, text: string) => string | undefined;
+  /** Writes the files named so far. */
+  flush: () => Promise<void>;
+};
+
+type ArchiveFs = {
+  fs: { exists: (path: string) => Promise<boolean>; write: (path: string, text: string) => Promise<void> };
+};
+
+async function writeArchived($: ArchiveFs, path: string, text: string): Promise<void> {
+  const ignorePath = `${ARCHIVE_DIR}/.gitignore`;
+  if (!(await $.fs.exists(ignorePath))) await $.fs.write(ignorePath, '*\n');
+  await $.fs.write(path, text);
+}
+
+/**
+ * Saves the tool results compaction truncates under `.claude/fast-jev-compaction/`,
+ * so a detail buried in one can be read back later. Credentials are never written.
+ */
+export function archiveWriter($: ArchiveFs): ArchiveWriter {
+  const pending = new Map<string, string>();
+  return {
+    cite(toolUseId, text) {
+      if (!text || looksSecret('', text)) return undefined;
+      const path = `${ARCHIVE_DIR}/result-${toolUseId}.txt`;
+      pending.set(path, text);
+      return path;
+    },
+    async flush() {
+      for (const [path, text] of pending) await writeArchived($, path, text);
+      pending.clear();
+    },
+  };
+}
+
+const SECRET_COMMAND =
+  /(^|[|;&]\s*)(printenv|env)\b|\.env\b|\b(secret|secrets|credential|credentials|password|token|keychain|netrc|id_rsa|private[_-]?key)\b/i;
+const SECRET_OUTPUT =
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(aws_secret_access_key|api[_-]?key|access[_-]?token|client[_-]?secret|password)\s*[=:]\s*\S|:\/\/[^\s:@/]+:[^\s:@/]+@/i;
+
+/** True when the command or its output looks like it carries credentials. */
+export function looksSecret(command: string, output: string): boolean {
+  return SECRET_COMMAND.test(command) || SECRET_OUTPUT.test(output.slice(0, 20_000));
 }
 
 function percent(ratio: number): string {
@@ -391,6 +471,52 @@ export const register: Register = (on: On, options: PluginOptions) => {
   let compacting = false;
   let retryAtPercent = 0;
 
+  if (configured.bashOutput) {
+    on('tool.call', { tool: 'Bash' }, async ($, event, next) => {
+      const answer = await next(event);
+      try {
+        if (answer.deny !== undefined || answer.isError || !answer.result) return answer;
+        const record = answer.result;
+        if ('persistedOutputPath' in record && record.persistedOutputPath) return answer;
+        const combined = record.stdout + (record.stderr ? `\n${record.stderr}` : '');
+        if (combined.length <= configured.bashOutputMinChars) return answer;
+        const apiKey = await getApiKey($, configured);
+        if (!apiKey) return answer;
+        const goal = goalFromMessages(await $.session.messages());
+        const path = looksSecret(event.command, combined)
+          ? undefined
+          : `${ARCHIVE_DIR}/bash-${event.tool_use_id ?? Date.now()}.txt`;
+        const trimmed = await trimOutput(
+          { command: event.command, goal, output: record.stdout, fullOutputPath: path },
+          jevAsker(
+            async (url, init) => {
+              const response = await $.http.fetch(url, init);
+              return { status: response.status, ok: response.ok, text: response.text };
+            },
+            apiKey,
+            configured.model,
+          ),
+          {
+            minChars: configured.bashOutputMinChars,
+            chunkLines: configured.bashOutputChunkLines,
+            keepThreshold: configured.bashOutputKeepThreshold,
+            maxStateTokens: configured.maxStateTokens,
+          },
+        );
+        if (!trimmed.trimmed) return answer;
+        if (path) await writeArchived($, path, combined);
+        const scores = trimmed.scores.map((score) => score.toFixed(2)).join(',');
+        log($,
+          `bash output: kept ${trimmed.kept}/${trimmed.chunks} chunks (${trimmed.charsBefore}→${trimmed.charsAfter} chars) scores=${scores}`,
+        );
+        return { result: { ...record, stdout: trimmed.output } };
+      } catch (error) {
+        log($, `bash output trim skipped (${error instanceof Error ? error.message : String(error)})`);
+        return answer;
+      }
+    });
+  }
+
   on('session.compact', async ($, event, next) => {
     if (event.agentId) return next(event);
     if (event.trigger === 'precompute') {
@@ -421,6 +547,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
           return { status: response.status, ok: response.ok, text: response.text };
         },
         (ms) => $.clock.sleep(ms, { signal: next.signal }),
+        config.archiveResults ? archiveWriter($) : undefined,
       );
       if (next.signal?.aborted) return interrupted($);
       for (const line of decisionLogLines(result)) log($, line);
