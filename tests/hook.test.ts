@@ -6,8 +6,16 @@ import {
   resolveHookConfig,
   summarize,
   toSessionMessages,
+  verdict,
 } from '../hooks/fast-jev.ts';
-import { applyDecisions, collectToolCalls, decideCall, type Message } from '../src/index.js';
+import {
+  applyDecisions,
+  collectToolCalls,
+  decideCall,
+  reductionBound,
+  reductionRatio,
+  type Message,
+} from '../src/index.js';
 
 type SessionMessage = Message & { handle?: string };
 
@@ -137,6 +145,37 @@ describe('compactSession', () => {
     ]);
     expect(lines.every((line) => line.length <= 60)).toBe(true);
     expect(decisionLogLines({ ...output, decisions: [] })).toEqual(['decisions: (none)']);
+  });
+
+  it('does not call low reduction a failure when the candidates could not have freed more', async () => {
+    const config = { ...resolveHookConfig({ preserveRecentMessages: 1 }), apiKey: 'k' };
+    const prose = message('assistant', 'ruling: we keep X, not Y, because Z. '.repeat(400), { handle: 'h-p' });
+    const history = [transcript()[0]!, prose, ...transcript().slice(1)];
+    const { result: output } = await compactSession(history, config, jevFetch(() => 0));
+    expect(reductionRatio(output)).toBeLessThan(config.minReductionRatio);
+    expect(verdict(output, config, 30)).toEqual({
+      kind: 'nothing_to_prune',
+      bound: reductionBound(output),
+    });
+    expect(verdict(output, config, 90)).toMatchObject({ kind: 'capacity' });
+  });
+
+  it('calls a real reduction scored, and Jev keeping everything scored too while the window has room', async () => {
+    const config = { ...resolveHookConfig({ preserveRecentMessages: 1 }), apiKey: 'k' };
+    const { result: dropped } = await compactSession(transcript(), config, jevFetch(() => 0));
+    expect(verdict(dropped, config, 95)).toEqual({ kind: 'scored' });
+    const { result: kept } = await compactSession(transcript(), config, jevFetch(() => 0.95));
+    expect(reductionRatio(kept)).toBe(0);
+    expect(verdict(kept, config, 30)).toEqual({ kind: 'scored' });
+    expect(verdict(kept, config, 70)).toMatchObject({ kind: 'capacity', estimatedPercent: 70 });
+  });
+
+  it('applies the plain ratio rule when the host does not report the window fill', async () => {
+    const config = { ...resolveHookConfig({ preserveRecentMessages: 1 }), apiKey: 'k' };
+    const { result: kept } = await compactSession(transcript(), config, jevFetch(() => 0.95));
+    expect(verdict(kept, config, undefined)).toEqual({ kind: 'below_minimum' });
+    const { result: dropped } = await compactSession(transcript(), config, jevFetch(() => 0));
+    expect(verdict(dropped, config, undefined)).toEqual({ kind: 'scored' });
   });
 
   it('throws on a missing key and on failed requests so the hook falls back', async () => {

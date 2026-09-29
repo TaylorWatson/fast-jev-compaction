@@ -1,5 +1,10 @@
 import { noulAnswer } from './request.js';
-import { collectToolCalls, estimateTokens, fitState } from './state.js';
+import {
+  collectToolCalls,
+  estimateTokens,
+  fitState,
+  truncationNote,
+} from './state.js';
 import type {
   CallAnswer,
   CallDecision,
@@ -84,12 +89,14 @@ export function resolveOptions(options: CompactOptions = {}): ResolvedCompactOpt
 }
 
 /**
- * The two `noul` questions asked about one call: keep the call, keep its
- * result. Both carry criteria, because the boundary is subtle and the docs ask
- * for `true`/`false` sides whenever it is: https://docs.typesafe.ai/primitives/noul.
+ * The `noul` questions asked about one call: keep the call, keep its result.
+ * Both carry criteria, because the boundary is subtle and the docs ask for
+ * `true`/`false` sides whenever it is: https://docs.typesafe.ai/primitives/noul.
+ * A result an earlier round already cut to a head is not asked about again;
+ * there is no full output left to keep.
  */
 export function questionsFor(call: ToolCall): JevQuestions {
-  return {
+  const questions: JevQuestions = {
     [`call_${call.id}`]: {
       type: 'noul',
       instructions: `Tool call \`${call.id}\` (${call.tool}) should stay in \`history\`: knowing this call was made, with its input, still matters for what the assistant does next`,
@@ -98,15 +105,18 @@ export function questionsFor(call: ToolCall): JevQuestions {
         false: 'The call only gathered information that has since been superseded or acted upon: a search used to locate a file that was then edited, a read of a file that has since changed, a failing check that has since been fixed',
       },
     },
-    [`result_${call.id}`]: {
+  };
+  if (call.originalChars === undefined) {
+    questions[`result_${call.id}`] = {
       type: 'noul',
       instructions: `The full output of tool call \`${call.id}\` (${call.tool}, ${call.resultChars} chars) should stay in \`history\` verbatim: the assistant still needs its contents, and re-running the tool would not do`,
       criteria: {
         true: 'The exact contents are still in use and could not be recovered by re-running the tool: an error the assistant is still diagnosing, output the user asked about, the current state of a file being edited',
         false: 'The contents are stale, already stated in the assistant text, or trivially re-obtainable: a directory listing already used, a passing test run, a file read before it was rewritten',
       },
-    },
-  };
+    };
+  }
+  return questions;
 }
 
 /**
@@ -178,7 +188,8 @@ async function askBatch(
       call.id,
       {
         keepCall: noulAnswer(answers, `call_${call.id}`),
-        keepResult: noulAnswer(answers, `result_${call.id}`),
+        keepResult:
+          call.originalChars === undefined ? noulAnswer(answers, `result_${call.id}`) : 0,
       },
     ]),
   );
@@ -222,9 +233,7 @@ function truncatedResultText(text: string, isError: boolean, headChars: number):
   if (text.length <= headChars + 120) return text;
   const cut = splitsSurrogatePair(text, headChars) ? headChars - 1 : headChars;
   const head = cut > 0 ? `${text.slice(0, cut)}\n` : '';
-  return `${head}[fast-jev-compaction truncated ${text.length - cut} chars of this tool result${
-    isError ? ' (error)' : ''
-  }; re-run the tool if needed]`;
+  return `${head}${truncationNote(text.length - cut, isError)}`;
 }
 
 /**
@@ -330,6 +339,20 @@ export function reductionRatio(result: Pick<CompactResult, 'stats'>): number {
   return charsBefore === 0 ? 0 : (charsBefore - charsAfter) / charsBefore;
 }
 
+/** The reduction dropping every candidate would give: the most a round can free. */
+export function reductionBound(result: Pick<CompactResult, 'stats'>): number {
+  const { charsBefore, candidateChars } = result.stats;
+  return charsBefore === 0 ? 0 : candidateChars / charsBefore;
+}
+
+function inputChars(call: Pick<ToolCall, 'input'>): number {
+  try {
+    return JSON.stringify(call.input).length;
+  } catch {
+    return 20;
+  }
+}
+
 function count(decisions: readonly CallDecision[], reason: CallDecision['reason']): number {
   return decisions.filter((decision) => decision.reason === reason).length;
 }
@@ -395,6 +418,10 @@ export async function compact(
       resultsDropped: count(decisions, 'result_dropped'),
       callsDropped: count(decisions, 'call_dropped'),
       pinned: count(decisions, 'pinned'),
+      candidateChars: candidates.reduce(
+        (sum, call) => sum + inputChars(call) + call.resultChars,
+        0,
+      ),
       stateTokens: fitted.tokens,
       stateStage: fitted.stage,
       requests: batches.length,

@@ -126,6 +126,31 @@ export function isPinned(
   return index === 0 || index >= total - preserveRecentMessages;
 }
 
+/** The note a truncated tool result ends with; `truncatedResult` reads it back. */
+export function truncationNote(cut: number, isError: boolean): string {
+  return `[fast-jev-compaction truncated ${cut} chars of this tool result${
+    isError ? ' (error)' : ''
+  }; re-run the tool if needed]`;
+}
+
+const TRUNCATED_NOTE =
+  /\[fast-jev-compaction truncated (\d+) chars of this tool result(?: \(error\))?; re-run the tool if needed\]$/;
+
+/**
+ * What an earlier round left of a result, read off its note: the characters
+ * cut, the head kept, and the original length. Undefined for a result still whole.
+ */
+export function truncatedResult(
+  text: string,
+): { cut: number; head: number; original: number } | undefined {
+  const trimmed = text.trimEnd();
+  const match = TRUNCATED_NOTE.exec(trimmed);
+  if (!match) return undefined;
+  const cut = Number(match[1]);
+  const head = trimmed.slice(0, match.index).replace(/\n$/, '').length;
+  return { cut, head, original: cut + head };
+}
+
 /**
  * Pairs every tool_use with its tool_result by `tool_use_id`. Calls without a
  * result are not candidates (there is nothing to drop yet).
@@ -154,7 +179,7 @@ export function collectToolCalls(
       const found = results.get(tool.tool_use_id);
       if (!found) continue;
       if (found.index < callIndex) throw new Error(`Tool result precedes its call: ${tool.tool_use_id}`);
-      calls.push({
+      const call: ToolCall = {
         id: `t${calls.length + 1}`,
         tool_use_id: tool.tool_use_id,
         tool: tool.tool,
@@ -166,7 +191,13 @@ export function collectToolCalls(
         pinned:
           isPinned(callIndex, messages.length, preserveRecentMessages) ||
           isPinned(found.index, messages.length, preserveRecentMessages),
-      });
+      };
+      const cut = truncatedResult(found.result.text);
+      if (cut) {
+        call.originalChars = cut.original;
+        call.headChars = cut.head;
+      }
+      calls.push(call);
     }
   });
   return calls;
@@ -183,7 +214,19 @@ function inputText(input: Record<string, unknown>, limit: number): string {
 }
 
 function resultNote(call: ToolCall): string {
-  return `${call.isError ? 'error' : 'ok'}, ${call.resultChars} chars (omitted)`;
+  const status = call.isError ? 'error' : 'ok';
+  if (call.originalChars !== undefined) {
+    return `${status}, ${call.originalChars} chars originally; an earlier compaction cut it to a ${call.headChars ?? 0}-char head`;
+  }
+  return `${status}, ${call.resultChars} chars (omitted)`;
+}
+
+function resultTag(call: ToolCall): string {
+  const status = call.isError ? 'error' : 'ok';
+  if (call.originalChars !== undefined) {
+    return `${status} ${call.originalChars}ch, cut earlier`;
+  }
+  return `${status} ${call.resultChars}ch`;
 }
 
 /** One call as a single line, for when the structured form is too costly. */
@@ -196,9 +239,7 @@ function compactCall(call: ToolCall): string {
       return `${key}=${text.replace(/\s+/g, ' ')}`;
     })
     .join(' ');
-  return `${call.id} ${call.tool} ${truncate(input, INPUT_CHARS[2])} → ${
-    call.isError ? 'error' : 'ok'
-  } ${call.resultChars}ch`;
+  return `${call.id} ${call.tool} ${truncate(input, INPUT_CHARS[2])} → ${resultTag(call)}`;
 }
 
 /**
@@ -219,6 +260,7 @@ function mergeCallRuns(history: readonly HistoryEntry[], pinned: (e: HistoryEntr
   }
   return merged;
 }
+
 
 function callsByMessage(calls: readonly ToolCall[]): Map<number, ToolCall[]> {
   const byMessage = new Map<number, ToolCall[]>();

@@ -8,7 +8,7 @@ import type {
   TurnCompleteInput,
 } from 'claude-code';
 
-import { compact, reductionRatio, resolveOptions } from '../src/compact.js';
+import { compact, reductionBound, reductionRatio, resolveOptions } from '../src/compact.js';
 import { buildJevRequest, DEFAULT_MODEL, parseJevResponse } from '../src/request.js';
 import { goalFromMessages } from '../src/state.js';
 import type {
@@ -87,6 +87,42 @@ export function resolveHookConfig(options: PluginOptions): HookConfig {
   const goal = optionString(options, 'goal');
   if (goal) config.goal = goal;
   return config;
+}
+
+export type Verdict =
+  | { kind: 'scored' }
+  | { kind: 'nothing_to_prune'; bound: number }
+  | { kind: 'capacity'; estimatedPercent: number }
+  | { kind: 'below_minimum' };
+
+/**
+ * What the compaction outcome means. Reduction below `minReductionRatio` is
+ * not a failure when the candidates could not have freed that much anyway
+ * (`nothing_to_prune`); it is only a problem when the window would still be
+ * over the compaction threshold afterwards (`capacity`), which is when the
+ * built-in summary is worth its cost. Where the host does not report the
+ * window's fill, the plain ratio rule applies (`below_minimum`).
+ */
+export function verdict(
+  result: CompactResult,
+  config: Pick<HookConfig, 'minReductionRatio' | 'compactAtPercent'>,
+  contextPercent: number | undefined,
+): Verdict {
+  const reduction = reductionRatio(result);
+  if (reduction >= config.minReductionRatio) return { kind: 'scored' };
+  if (contextPercent === undefined) return { kind: 'below_minimum' };
+  const estimatedPercent = contextPercent * (1 - reduction);
+  if (estimatedPercent >= config.compactAtPercent) return { kind: 'capacity', estimatedPercent };
+  const bound = reductionBound(result);
+  if (bound < config.minReductionRatio) return { kind: 'nothing_to_prune', bound };
+  return { kind: 'scored' };
+}
+
+/** Why the built-in summary replaces a compaction, or undefined when the compaction stands. */
+function fallbackReason(outcome: Verdict, config: Pick<HookConfig, 'minReductionRatio'>): string | undefined {
+  if (outcome.kind === 'capacity') return `window would stay at ~${Math.round(outcome.estimatedPercent)}%`;
+  if (outcome.kind === 'below_minimum') return `below ${percent(config.minReductionRatio)} minimum`;
+  return undefined;
 }
 
 /** A `JevAsker` over the engine's `$.http.fetch`. */
@@ -253,6 +289,19 @@ function log($: { ui: { log: (text: string) => void } }, text: string): void {
   }
 }
 
+/** The context window's fill before compaction, or undefined where the host does not report it. */
+async function contextPercent($: {
+  session?: { usage?: () => Promise<{ context?: { percent?: number } }> };
+}): Promise<number | undefined> {
+  try {
+    const usage = await $.session?.usage?.();
+    const value = usage?.context?.percent;
+    return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function notify(
   $: {
     ui: {
@@ -286,16 +335,19 @@ export const register: Register = (on: On, options: PluginOptions) => {
         return { status: response.status, ok: response.ok, text: response.text };
       });
       for (const line of decisionLogLines(result)) log($, line);
-      if (reductionRatio(result) < config.minReductionRatio) {
-        notify(
-          $,
-          `fallback to built-in summary (below ${percent(config.minReductionRatio)} minimum: ${summarize(result)})`,
-        );
+      const outcome = verdict(result, config, await contextPercent($));
+      const reason = fallbackReason(outcome, config);
+      if (reason) {
+        notify($, `fallback to built-in summary (${reason}: ${summarize(result)})`);
         return next(event);
       }
+      const note =
+        outcome.kind === 'nothing_to_prune'
+          ? `; candidates were ${percent(outcome.bound)} of the history, the rest is text`
+          : '';
       notify(
         $,
-        `kept ${messages.length}/${event.messages.length} messages, no summary (${summarize(result)})`,
+        `kept ${messages.length}/${event.messages.length} messages, no summary (${summarize(result)}${note})`,
       );
       return { messages };
     } catch (error) {
