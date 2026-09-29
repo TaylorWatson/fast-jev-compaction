@@ -122,7 +122,7 @@ put it in a source file.
 | `baseUrl` | `https://api.typesafe.ai/v1/systemone` | System One endpoint |
 | `fetch` | native `fetch` | Injectable fetch implementation for tests |
 | `goal` | last 3 user prompts | Ongoing task description included in the state |
-| `keepThreshold` | `0.5` | Minimum keep probability for a tool *result* to stay verbatim |
+| `keepThreshold` | `0.15` | Minimum keep probability for a tool *result* to stay verbatim |
 | `keepCallThreshold` | `0.05` | Minimum keep probability for the tool *call* to stay; below it the call goes with its result |
 | `preserveRecentMessages` | `6` | Newest messages never touched (the first is always kept) |
 | `maxStateTokens` | `25000` | Estimated token ceiling for the state |

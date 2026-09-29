@@ -10,9 +10,10 @@ messages. User and assistant text is never touched. Jev is sent the whole
 conversation as `state` (tool outputs replaced by a one-line note) and, for
 every tool call outside the pinned first and newest messages, two questions:
 whether the call should stay and whether its full output should stay. An
-item is kept when Jev's probability reaches `keepThreshold`; a dropped result
-is truncated to its first `truncateHeadChars` characters plus a one-line note,
-and a dropped call disappears with its result.
+output stays verbatim when Jev's probability reaches `keepThreshold`;
+otherwise it is truncated to its first `truncateHeadChars` characters plus a
+one-line note, and the call itself is dropped with its result only when its
+probability is below `keepCallThreshold`.
 
 The state is fitted into `maxStateTokens` in stages: credential-shaped tool-input
 fields are redacted and tool inputs are truncated, then long texts are abridged
@@ -50,7 +51,8 @@ The plugin declares these `userConfig` values in
 
 | Option | Default |
 | --- | ---: |
-| `keepThreshold` | `0.5` |
+| `keepThreshold` | `0.15` |
+| `keepCallThreshold` | `0.05` |
 | `preserveRecentMessages` | `6` |
 | `compactAtPercent` | `60` |
 | `minReductionRatio` | `0.25` |

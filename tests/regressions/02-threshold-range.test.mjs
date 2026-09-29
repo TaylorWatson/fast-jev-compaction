@@ -10,7 +10,7 @@ test('decideCall enforces the threshold contract for direct callers',()=>{
   assert.throws(()=>core.decideCall({id:'t1',tool:'Read',pinned:false},{keepCall:1,keepResult:1},{keepThreshold:1.1}),/keepThreshold/);
 });
 test('existing default and non-finite-option behavior stays compatible',()=>{
-  assert.equal(core.resolveOptions({keepThreshold:NaN}).keepThreshold,0.5);
+  assert.equal(core.resolveOptions({keepThreshold:NaN}).keepThreshold,0.15);
   assert.equal(core.resolveOptions({keepThreshold:0}).keepThreshold,0);
   assert.equal(core.resolveOptions({keepThreshold:1}).keepThreshold,1);
 });

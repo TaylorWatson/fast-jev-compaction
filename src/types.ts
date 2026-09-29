@@ -97,7 +97,7 @@ export interface FittedState {
 export interface CompactOptions {
   /** Ongoing task description; defaults to the last few user prompts. */
   goal?: string;
-  /** Minimum keep probability for a tool *result* to stay verbatim. Default 0.5. */
+  /** Minimum keep probability for a tool *result* to stay verbatim. Default 0.15: a Noul of 0.5 means "unsure". */
   keepThreshold?: number;
   /**
    * Minimum keep probability for the tool *call* to stay. Below it the call is

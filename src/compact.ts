@@ -16,7 +16,13 @@ import type {
 
 export const DEFAULT_OPTIONS: ResolvedCompactOptions = {
   goal: '',
-  keepThreshold: 0.5,
+  /**
+   * A Noul of 0.5 is Jev saying it is unsure, not "half". Distance from 0.5 is
+   * the confidence signal, so a threshold of 0.5 puts every uncertain answer on
+   * the truncate side. Observed keep-result scores sit between 0.06 and 0.37,
+   * so only a low floor lets any result stay verbatim.
+   */
+  keepThreshold: 0.15,
   /**
    * The gate for the *call*, separate from the gate for the *result*.
    *

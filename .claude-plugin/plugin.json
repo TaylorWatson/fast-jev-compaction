@@ -13,8 +13,8 @@
     "keepThreshold": {
       "type": "number",
       "title": "Keep threshold",
-      "description": "Minimum Jev probability that a tool result is still needed verbatim; below it the result is truncated.",
-      "default": 0.5
+      "description": "Minimum Jev probability that a tool result is still needed verbatim; below it the result is truncated. A Noul of 0.5 means Jev is unsure, so keep this low.",
+      "default": 0.15
     },
     "keepCallThreshold": {
       "type": "number",
