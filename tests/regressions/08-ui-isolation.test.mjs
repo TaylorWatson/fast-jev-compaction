@@ -14,7 +14,7 @@ for(const method of ['log','toast']) test('successful compaction survives '+meth
 });
 test('auto-compaction logging cannot swallow event continuation',async()=>{
   const h=handlers(),$=host();$.session.compact=async()=>{throw Error('failure');};$.ui.log=()=>{throw Error('logger failed');};let next=0;
-  await h['turn.complete']($,{},async()=>{next++;return {};});assert.equal(next,1);
+  await h['turn.complete']($,{reason:'answer'},async()=>{next++;return {};});assert.equal(next,1);
 });
 test('native fallback rejection is propagated without invoking it twice',async()=>{
   const h=handlers(),$=host();let next=0;

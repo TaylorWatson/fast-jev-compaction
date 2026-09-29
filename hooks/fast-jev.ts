@@ -324,6 +324,11 @@ export const register: Register = (on: On, options: PluginOptions) => {
   let compacting = false;
 
   on('session.compact', async ($, event, next) => {
+    if (event.agentId) return next(event);
+    if (event.trigger === 'precompute') {
+      return { skip: 'fast-jev-compaction does not handle speculative compactions' };
+    }
+
     try {
       const config = { ...configured, apiKey: await getApiKey($, configured) };
       if (event.instructions?.trim()) {
@@ -360,7 +365,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
   });
 
   on('turn.complete', async ($, event: TurnCompleteInput, next) => {
-    if (compacting) return next(event);
+    if (event.agentId || event.reason !== 'answer' || compacting) return next(event);
     compacting = true;
     try {
       const { context } = await $.session.usage();
