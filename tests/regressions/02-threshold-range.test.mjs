@@ -14,3 +14,6 @@ test('existing default and non-finite-option behavior stays compatible',()=>{
   assert.equal(core.resolveOptions({keepThreshold:0}).keepThreshold,0);
   assert.equal(core.resolveOptions({keepThreshold:1}).keepThreshold,1);
 });
+for(const threshold of [-0.1,1.01]) test('reject out-of-range keep-call threshold '+threshold,()=>{
+  assert.throws(()=>core.resolveOptions({keepCallThreshold:threshold}),/keepCallThreshold/);
+});
