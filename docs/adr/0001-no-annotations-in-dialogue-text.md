@@ -1,0 +1,3 @@
+# No compaction annotations in dialogue text
+
+Dropping tool calls let the model narrate work with no tool call behind it (upstream #65), and three PRs (#69, #75, #18) proposed appending "a tool call was removed here" markers to assistant text. We rejected all of them: a live test showed the model copying the marker into a fabricated report, and any marker breaks the verbatim promise that makes compaction safe to trust. Instead, calls are almost never dropped (a separate, very low keep-call threshold truncates the result and keeps the call), and compaction notes may appear only inside a truncated tool result.
