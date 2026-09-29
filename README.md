@@ -7,6 +7,77 @@ every tool call and result is scored in one fast request, stale ones are
 dropped or truncated, everything kept stays verbatim. Also usable as an npm
 library.
 
+## Changes since the fork (0.4.0)
+
+This fork picks up from [tamaratran/fast-jev-compaction](https://github.com/tamaratran/fast-jev-compaction)
+at its last commit and merges the reviewed upstream pull requests below, each
+credited to its original author. Numbers refer to upstream PRs.
+
+### New features
+
+- **Bash output trimming** (#18): long Bash output is trimmed with Jev before
+  the model sees it, with the full output saved under
+  `.claude/fast-jev-compaction/`. Off by default (`bashOutput`), with its own
+  `bashOutputKeepThreshold` (0.1).
+- **Saving truncated results** (#18): `archiveResults` writes tool results that
+  compaction truncates to `.claude/fast-jev-compaction/` and cites the file in
+  their note. Off by default.
+- **Separate call threshold** (#67): `keepCallThreshold` (0.05) decides whether
+  a tool call survives, independently of `keepThreshold` for its result, so a
+  call is almost never dropped and the record of the work stays.
+- **Built-in summary only when needed** (#103): `builtinFallback` (`auto`,
+  `always`, `never`). By default only Claude Code's own automatic compaction
+  falls back to the built-in summary; a `/compact` Jev cannot shrink leaves the
+  conversation unchanged.
+- **Outcome verdicts** (#77): a low reduction only triggers the fallback when
+  the context window would stay above `compactAtPercent`; results truncated in
+  an earlier round are not re-scored.
+- **Retries** (#58): 429, 5xx and network failures are retried (`retries`, 2;
+  `retryDelayMs`, 500, tripled each time). `onBatchFailure: keep` keeps a batch
+  that still fails whole instead of failing the whole compaction.
+- **Compaction instructions** (#28): text passed to `/compact` is added to the
+  goal Jev sees.
+- **Headless sessions** (#111): where `claude -p`, the SDK or the desktop Code
+  tab refuse `$.session.compact`, the plugin queues `/compact` instead.
+- **Credential redaction** (#64): credential-named fields in tool inputs are
+  sent to Jev as `[REDACTED]`.
+
+### Changed defaults
+
+- `keepThreshold` 0.5 to **0.15** (#55): observed Jev scores sit well below
+  0.5, so the old default truncated every result.
+- `maxRequestTokens` 30000 to **60000** (#55): under Jev's 64k request limit;
+  the state is fitted so it plus the longest question stays under Jev's 32k
+  limit.
+- Both Jev questions now carry true/false criteria (#55), which separates
+  calls that changed something from calls that only gathered information.
+
+### Reliability and correctness
+
+- Malformed or out-of-range Jev answers, invalid thresholds, and duplicate or
+  reversed tool IDs are rejected instead of silently deleting context (#28).
+- Request timeout (15s) and cancellation, at most 4 concurrent requests, an
+  auto-compaction lock taken before the first await, and UI failures kept out
+  of the compaction path (#28).
+- Tool calls still waiting for their result stay visible to Jev (#28).
+- Subagent and fork compactions go straight to the built-in summary;
+  speculative `precompute` compactions are skipped; auto-compaction only runs
+  after a finished main-agent answer (#112).
+- Host-injected text (command echoes, system reminders, task notifications)
+  is left out when inferring the goal (#78).
+- Truncation never splits an emoji or other surrogate pair (#110).
+- Token estimates charge hex, UUIDs and base64 more accurately (#85).
+- An HTML 403 from a firewall or proxy gets a readable error (#101).
+- A compaction interrupted with Esc is vetoed quietly (#58).
+
+### Project
+
+- Vitest 5 (#59), CI on Node 22 (#75), TypeScript 7 compatible typecheck
+  (#106), and the #28 regression suite runs under Vitest.
+- Domain glossary in [`CONTEXT.md`](CONTEXT.md) and decision records in
+  [`docs/adr/`](docs/adr/). Compaction never writes notes into user or
+  assistant text ([ADR 0001](docs/adr/0001-no-annotations-in-dialogue-text.md)).
+
 ## What and why
 
 Most context compaction asks an LLM to summarize old turns. A summary is
