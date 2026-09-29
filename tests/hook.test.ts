@@ -415,6 +415,7 @@ function host(fetch: ReturnType<typeof jevFetch>) {
     settings: { read: async () => ({}) },
     http: { fetch },
     ui: { log: (text: string) => notices.push(text), toast: () => {} },
+    clock: { sleep: async () => {} },
   };
   return { $, notices };
 }
@@ -535,5 +536,42 @@ describe('turn.complete request', () => {
     const { state, turn } = driver();
     for (const percent of [61, 65, 30, 61]) await turn(percent);
     expect(state.requested).toEqual([61, 61]);
+  });
+});
+
+describe('retries and interrupts in the hook', () => {
+  it('retries a fetch that throws, waiting on the host clock', async () => {
+    let calls = 0;
+    const answers = jevFetch(() => 0.01);
+    const fetch = async (url: string, init?: { body?: string }) => {
+      calls += 1;
+      if (calls === 1) throw new Error('socket hang up');
+      return answers(url, init);
+    };
+    const waits: number[] = [];
+    const { $, notices } = host(fetch as ReturnType<typeof jevFetch>);
+    $.clock.sleep = async (ms: number) => void waits.push(ms);
+    const out = await hooks({ preserveRecentMessages: 1 })['session.compact']!(
+      $,
+      { trigger: 'manual', messages: transcript() },
+      async () => CORE,
+    );
+    expect(waits).toEqual([500]);
+    expect((out as { messages: unknown[] }).messages).toBeDefined();
+    expect(notices.at(-1)).toMatch(/1 retried/);
+  });
+
+  it('vetoes quietly when the dispatch is abandoned', async () => {
+    const controller = new AbortController();
+    const { $, notices } = host(jevFetch(() => 0.01));
+    const next = Object.assign(async () => CORE, { signal: controller.signal });
+    controller.abort();
+    const out = await hooks({ preserveRecentMessages: 1 })['session.compact']!(
+      $,
+      { trigger: 'auto', messages: transcript() },
+      next,
+    );
+    expect(out).toEqual({ skip: 'fast-jev-compaction: interrupted' });
+    expect(notices.at(-1)).toBe('compaction interrupted; nothing changed');
   });
 });

@@ -66,6 +66,9 @@ The plugin declares these `userConfig` values in
 | `maxStateTokens` | `25000` |
 | `maxRequestTokens` | `30000` |
 | `truncateHeadChars` | `300` |
+| `retries` | `2` |
+| `retryDelayMs` | `500` |
+| `onBatchFailure` | `throw` |
 | `model` | `jev-latest` |
 
 The TypeSafe key can be supplied as the sensitive `apiKey` plugin option or
@@ -87,7 +90,11 @@ plugin's `turn.complete` one) answer `{ skip }` instead, so the
 conversation stays as it is and Claude Code shows why. `always` delegates on
 every trigger, as the plugin did before the option existed; `never` on none.
 Speculative `precompute` compactions are skipped without asking Jev, and
-subagent or fork compactions go straight to the built-in summary.
+subagent or fork compactions go straight to the built-in summary. Failed
+requests are retried on Claude Code's clock (`retries`, `retryDelayMs`);
+`onBatchFailure: keep` leaves a batch that still fails whole instead of
+failing the compaction. A compaction interrupted with Esc is vetoed quietly:
+nothing is replaced and no summary runs.
 The outcome is shown as a toast and logged with the
 reduction, per-reason counts, state size and request count; a per-call
 `decisions:` line with both probabilities is logged for diagnosis. The

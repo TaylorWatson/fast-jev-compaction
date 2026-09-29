@@ -1,4 +1,4 @@
-import { buildJevRequest, parseJevResponse } from './request.js';
+import { buildJevRequest, JevTransportError, parseJevResponse } from './request.js';
 import type { JevAsker, JevQuestions, JevResponse, JevState } from './types.js';
 
 export interface JevClientOptions {
@@ -65,12 +65,15 @@ export class JevClient implements JevAsker {
     });
     try {
       if (controller.signal.aborted) return await cancelled;
-      const response = await Promise.race([this.fetcher(request.url, {
+      const sent = this.fetcher(request.url, {
         method: request.method,
         headers: request.headers,
         body: request.body,
         signal: controller.signal,
-      }), cancelled]);
+      }).catch((error: unknown) => {
+        throw controller.signal.aborted ? error : new JevTransportError(error);
+      });
+      const response = await Promise.race([sent, cancelled]);
       const text = await Promise.race([response.text(), cancelled]);
       return parseJevResponse(response.status, response.ok, text);
     } finally {

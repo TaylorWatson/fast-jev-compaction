@@ -85,8 +85,14 @@ session data you are authorized to send to that endpoint.
    removed, untouched messages are returned as the same objects, and no result
    is ever left without its call.
 
-Jev failures, malformed answers, a missing key, or a history that cannot be
-fitted throw; the caller (or the Claude Code hook) decides what to fall back to.
+A 429, a 5xx or a failed fetch (`JevTransportError`, unless it was an abort or
+an unparsable URL) is retried `retries` times with a tripling delay; a timeout
+is not retried. By default (`onBatchFailure: 'throw'`) any batch that still
+fails, a malformed answer, a missing key, or a history that cannot be fitted
+throws, and the caller (or the Claude Code hook) decides what to fall back to.
+With `onBatchFailure: 'keep'`, a batch that outlived its retries or came back
+malformed keeps its calls whole, is counted in `stats.failedBatches`, and the
+other batches' answers apply.
 
 ## Install and usage
 
@@ -143,6 +149,10 @@ put it in a source file.
 | `maxStateTokens` | `25000` | Estimated token ceiling for the state |
 | `maxRequestTokens` | `30000` | Estimated ceiling for state plus one batch of questions |
 | `truncateHeadChars` | `300` | Characters of a dropped tool result retained before its note |
+| `retries` | `2` | Further attempts per request after a 429, a 5xx or a `JevTransportError`; nothing else is retried |
+| `retryDelayMs` | `500` | Wait before the first retry, tripled on each further one |
+| `onBatchFailure` | `throw` | `throw` rejects the compaction when a batch fails after its retries; `keep` leaves that batch whole and applies the rest |
+| `sleep` | `setTimeout` | Injectable wait between retries, for hosts without a timer |
 
 `result.stats` reports message and character counts before and after, the
 per-reason decision counts, the state size in estimated tokens, which fitting

@@ -31,6 +31,7 @@ export function host() {
   return {
     env: { get: async () => undefined }, settings: { read: async () => ({}) },
     ui: { log() {}, toast() {} },
+    clock: { sleep: async () => {} },
     session: { usage: async () => ({ context: { percent: 80 } }), compact: async () => ({}) },
     http: { fetch: async (_url, init) => ({ status: 200, ok: true,
       text: JSON.stringify(answers(JSON.parse(init.body).questions)) }) },

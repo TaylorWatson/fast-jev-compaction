@@ -1,4 +1,4 @@
-import { noulAnswer } from './request.js';
+import { JevError, JevResponseError, noulAnswer } from './request.js';
 import {
   collectToolCalls,
   estimateTokens,
@@ -13,6 +13,7 @@ import type {
   CompactionState,
   JevAsker,
   JevQuestions,
+  JevResponse,
   Message,
   ResolvedCompactOptions,
   ToolCall,
@@ -45,10 +46,21 @@ export const DEFAULT_OPTIONS: ResolvedCompactOptions = {
   maxRequestTokens: 30_000,
   maxConcurrentRequests: 4,
   truncateHeadChars: 300,
+  retries: 2,
+  retryDelayMs: 500,
+  onBatchFailure: 'throw',
+  sleep: defaultSleep,
 };
 
 /** Tokens the request envelope (`model`, key names) adds around state and questions. */
 const REQUEST_OVERHEAD_TOKENS = 20;
+
+/** A timer where the host has one; no wait at all where it does not. */
+function defaultSleep(ms: number): Promise<void> {
+  const timer = (globalThis as { setTimeout?: (fn: () => void, ms: number) => unknown }).setTimeout;
+  if (ms <= 0 || typeof timer !== 'function') return Promise.resolve();
+  return new Promise((resolve) => timer(resolve, ms));
+}
 
 function finite(value: number | undefined, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
@@ -85,6 +97,10 @@ export function resolveOptions(options: CompactOptions = {}): ResolvedCompactOpt
       0,
       Math.floor(finite(options.truncateHeadChars, DEFAULT_OPTIONS.truncateHeadChars)),
     ),
+    retries: Math.max(0, Math.floor(finite(options.retries, DEFAULT_OPTIONS.retries))),
+    retryDelayMs: Math.max(0, finite(options.retryDelayMs, DEFAULT_OPTIONS.retryDelayMs)),
+    onBatchFailure: options.onBatchFailure === 'keep' ? 'keep' : DEFAULT_OPTIONS.onBatchFailure,
+    sleep: options.sleep ?? DEFAULT_OPTIONS.sleep,
   };
 }
 
@@ -176,13 +192,53 @@ export function decideCall(
   return { ...base, action: 'drop_call', reason: 'call_dropped' };
 }
 
+/** A failure worth another attempt: a 429/5xx, or the transport failing before a status came back. */
+function transient(error: unknown): boolean {
+  return error instanceof JevError && error.retryable;
+}
+
+/** What `onBatchFailure: 'keep'` may keep: a hiccup that outlived its retries, or a bad answer. */
+function keepable(error: unknown): boolean {
+  return transient(error) || error instanceof JevResponseError;
+}
+
+interface BatchTally {
+  retries: number;
+  failedBatches: number;
+}
+
+type RetryOptions = Pick<ResolvedCompactOptions, 'retries' | 'retryDelayMs' | 'sleep'>;
+
+/** One request, retried on transient failures; an interrupted wait rejects with its reason. */
+async function askWithRetries(
+  asker: JevAsker,
+  state: CompactionState,
+  questions: JevQuestions,
+  options: RetryOptions,
+  tally: BatchTally,
+): Promise<JevResponse> {
+  let delay = options.retryDelayMs;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await asker.ask(state, questions);
+    } catch (error) {
+      if (attempt >= options.retries || !transient(error)) throw error;
+    }
+    tally.retries += 1;
+    await options.sleep(delay);
+    delay *= 3;
+  }
+}
+
 async function askBatch(
   asker: JevAsker,
   state: CompactionState,
   batch: readonly ToolCall[],
+  options: RetryOptions,
+  tally: BatchTally,
 ): Promise<Map<string, CallAnswer>> {
   const questions: JevQuestions = Object.assign({}, ...batch.map(questionsFor));
-  const { answers } = await asker.ask(state, questions);
+  const { answers } = await askWithRetries(asker, state, questions, options, tally);
   return new Map(
     batch.map((call) => [
       call.id,
@@ -200,8 +256,10 @@ async function askBatches(
   asker: JevAsker,
   state: CompactionState,
   batches: readonly ToolCall[][],
-  concurrency: number,
+  options: ResolvedCompactOptions,
+  tally: BatchTally,
 ): Promise<Map<string, CallAnswer>[]> {
+  const concurrency = options.maxConcurrentRequests;
   const answers: Map<string, CallAnswer>[] = new Array(batches.length);
   let cursor = 0;
   let failed = false;
@@ -210,8 +268,12 @@ async function askBatches(
     while (!failed && cursor < batches.length) {
       const index = cursor++;
       try {
-        answers[index] = await askBatch(asker, state, batches[index]!);
+        answers[index] = await askBatch(asker, state, batches[index]!, options, tally);
       } catch (error) {
+        if (options.onBatchFailure === 'keep' && keepable(error)) {
+          tally.failedBatches += 1;
+          continue;
+        }
         if (!failed) failure = error;
         failed = true;
       }
@@ -219,7 +281,7 @@ async function askBatches(
   };
   await Promise.all(Array.from({ length: Math.min(concurrency, batches.length) }, worker));
   if (failed) throw failure;
-  return answers;
+  return answers.filter(Boolean);
 }
 
 /** Whether ending `text` at `index` would separate the two halves of a surrogate pair. */
@@ -378,6 +440,7 @@ export async function compact(
   let fitted: { tokens: number; stage: string } = { tokens: 0, stage: '' };
   let batches: ToolCall[][] = [];
   const answers = new Map<string, CallAnswer>();
+  const tally: BatchTally = { retries: 0, failedBatches: 0 };
   if (candidates.length > 0) {
     const largestQuestion = candidates.reduce((largest, call) => Math.max(
       largest, estimateTokens(JSON.stringify(questionsFor(call))),
@@ -390,9 +453,7 @@ export async function compact(
     });
     fitted = state;
     batches = batchCalls(candidates, state.tokens, resolved);
-    const answered = await askBatches(
-      asker, state.state, batches, resolved.maxConcurrentRequests,
-    );
+    const answered = await askBatches(asker, state.state, batches, resolved, tally);
     for (const map of answered) for (const [id, answer] of map) answers.set(id, answer);
   }
 
@@ -425,6 +486,8 @@ export async function compact(
       stateTokens: fitted.tokens,
       stateStage: fitted.stage,
       requests: batches.length,
+      retries: tally.retries,
+      failedBatches: tally.failedBatches,
       ms: Date.now() - started,
     },
   };

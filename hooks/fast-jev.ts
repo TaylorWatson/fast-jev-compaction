@@ -9,13 +9,14 @@ import type {
 } from 'claude-code';
 
 import { compact, reductionBound, reductionRatio, resolveOptions } from '../src/compact.js';
-import { buildJevRequest, DEFAULT_MODEL, parseJevResponse } from '../src/request.js';
+import { buildJevRequest, DEFAULT_MODEL, JevTransportError, parseJevResponse } from '../src/request.js';
 import { goalFromMessages } from '../src/state.js';
 import type {
   CompactOptions,
   CompactResult,
   JevAsker,
   Message,
+  Sleep,
   ToolResult,
   ToolUse,
 } from '../src/types.js';
@@ -104,6 +105,8 @@ export function resolveHookConfig(options: PluginOptions): HookConfig {
     'maxStateTokens',
     'maxRequestTokens',
     'truncateHeadChars',
+    'retries',
+    'retryDelayMs',
   ] as const) {
     const value = options[key];
     if (typeof value === 'number' && Number.isFinite(value)) numbers[key] = value;
@@ -123,6 +126,7 @@ export function resolveHookConfig(options: PluginOptions): HookConfig {
   if (apiKey) config.apiKey = apiKey;
   const goal = optionString(options, 'goal');
   if (goal) config.goal = goal;
+  if (options['onBatchFailure'] === 'keep') config.onBatchFailure = 'keep';
   return config;
 }
 
@@ -167,11 +171,16 @@ export function jevAsker(fetchFn: HookFetch, apiKey: string, model: string): Jev
   return {
     async ask(state, questions) {
       const request = buildJevRequest({ apiKey, model }, state, questions);
-      const response = await fetchFn(request.url, {
-        method: request.method,
-        headers: request.headers,
-        body: request.body,
-      });
+      let response: HookFetchResponse;
+      try {
+        response = await fetchFn(request.url, {
+          method: request.method,
+          headers: request.headers,
+          body: request.body,
+        });
+      } catch (error) {
+        throw new JevTransportError(error);
+      }
       return parseJevResponse(response.status, response.ok, response.text);
     },
   };
@@ -241,9 +250,14 @@ export async function compactSession(
   messages: readonly SessionMessage[],
   config: HookConfig,
   fetchFn: HookFetch,
+  sleep?: Sleep,
 ): Promise<SessionCompaction> {
   if (!config.apiKey) throw new Error('TYPESAFE_API_KEY is not configured');
-  const result = await compact(messages, jevAsker(fetchFn, config.apiKey, config.model), config);
+  const result = await compact(
+    messages,
+    jevAsker(fetchFn, config.apiKey, config.model),
+    sleep ? { ...config, sleep } : config,
+  );
   return { result, messages: toSessionMessages(messages, result.messages) };
 }
 
@@ -259,9 +273,14 @@ export function summarize(result: CompactResult): string {
     stats.callsDropped > 0 ? `${stats.callsDropped} call_dropped` : '',
     stats.pinned > 0 ? `${stats.pinned} pinned` : '',
   ].filter(Boolean);
+  const requests = [
+    `${stats.requests} request(s)`,
+    stats.retries > 0 ? `${stats.retries} retried` : '',
+    stats.failedBatches > 0 ? `${stats.failedBatches} batch(es) failed and kept whole` : '',
+  ].filter(Boolean).join(', ');
   return `${percent(reductionRatio(result))} reduction; ${
     parts.join(', ') || 'no tool calls'
-  }; state ~${stats.stateTokens} tokens (${stats.stateStage}) in ${stats.requests} request(s)`;
+  }; state ~${stats.stateTokens} tokens (${stats.stateStage}) in ${requests}`;
 }
 
 const UI_LOG_MAX_CHARS = 4096;
@@ -356,6 +375,12 @@ function notify(
   }
 }
 
+/** An abandoned dispatch (Esc, a hook above settled) is vetoed quietly: no summary, nothing replaced. */
+function interrupted($: { ui: { log: (text: string) => void } }): { skip: string } {
+  log($, 'compaction interrupted; nothing changed');
+  return { skip: 'fast-jev-compaction: interrupted' };
+}
+
 /** The host's refusal of `$.session.compact` in a headless (-p / SDK) session. */
 export function isHeadlessRefusal(error: unknown): boolean {
   return error instanceof Error && error.message.includes('not available in a headless');
@@ -388,10 +413,16 @@ export const register: Register = (on: On, options: PluginOptions) => {
         const goal = config.goal || goalFromMessages(event.messages);
         config.goal = `${goal}\n\nCompaction instructions: ${event.instructions}`;
       }
-      const { result, messages } = await compactSession(event.messages, config, async (url, init) => {
-        const response = await $.http.fetch(url, init);
-        return { status: response.status, ok: response.ok, text: response.text };
-      });
+      const { result, messages } = await compactSession(
+        event.messages,
+        config,
+        async (url, init) => {
+          const response = await $.http.fetch(url, init);
+          return { status: response.status, ok: response.ok, text: response.text };
+        },
+        (ms) => $.clock.sleep(ms, { signal: next.signal }),
+      );
+      if (next.signal?.aborted) return interrupted($);
       for (const line of decisionLogLines(result)) log($, line);
       const outcome = verdict(result, config, await contextPercent($));
       const reason = fallbackReason(outcome, config);
@@ -408,6 +439,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
       );
       return { messages };
     } catch (error) {
+      if (next.signal?.aborted) return interrupted($);
       return giveUp(error instanceof Error ? error.message : String(error));
     }
   });

@@ -12,6 +12,8 @@ import {
   goalFromMessages,
   isMachineText,
   JevClient,
+  JevRequestError,
+  JevTransportError,
   parseJevResponse,
   questionsFor,
   reductionBound,
@@ -627,5 +629,96 @@ describe('HTTP client', () => {
     await expect(
       compactMessages(transcript(), { apiKey: '', preserveRecentMessages: 1 }),
     ).rejects.toThrow(/TYPESAFE_API_KEY/);
+  });
+});
+
+describe('retries and batch failures', () => {
+  const noWait = async () => {};
+
+  function flaky(failures: unknown[], answer = 0.01): { asker: JevAsker; attempts: () => number } {
+    let attempts = 0;
+    const jev = fakeJev(() => answer);
+    return {
+      asker: {
+        async ask(state, questions) {
+          attempts += 1;
+          const failure = failures.shift();
+          if (failure !== undefined) throw failure;
+          return jev.ask(state, questions);
+        },
+      },
+      attempts: () => attempts,
+    };
+  }
+
+  it('retries 429, 5xx and transport failures, and counts the retries', async () => {
+    const { asker, attempts } = flaky([
+      new JevRequestError(429, 'slow down'),
+      new JevTransportError(new Error('socket hang up')),
+    ]);
+    const output = await compact(transcript(), asker, { preserveRecentMessages: 1, sleep: noWait });
+    expect(attempts()).toBe(2 + output.stats.requests);
+    expect(output.stats.retries).toBe(2);
+  });
+
+  it('waits between retries and triples the delay', async () => {
+    const waits: number[] = [];
+    const { asker } = flaky([new JevRequestError(503, ''), new JevRequestError(503, '')]);
+    await compact(transcript(), asker, {
+      preserveRecentMessages: 1,
+      retryDelayMs: 100,
+      sleep: async (ms) => void waits.push(ms),
+    });
+    expect(waits).toEqual([100, 300]);
+  });
+
+  it('does not retry a request the endpoint rejected, an abort or a plain error', async () => {
+    for (const failure of [
+      new JevRequestError(400, 'bad request'),
+      new JevTransportError(Object.assign(new Error('aborted'), { name: 'AbortError' })),
+      new Error('not a Jev error'),
+    ]) {
+      const { asker, attempts } = flaky([failure]);
+      await expect(compact(transcript(), asker, { preserveRecentMessages: 1, sleep: noWait })).rejects.toBe(failure);
+      expect(attempts()).toBe(1);
+    }
+  });
+
+  it('gives up after the configured retries', async () => {
+    const failures = Array.from({ length: 5 }, () => new JevRequestError(500, 'down'));
+    const { asker, attempts } = flaky(failures);
+    await expect(
+      compact(transcript(), asker, { preserveRecentMessages: 1, retries: 1, sleep: noWait }),
+    ).rejects.toBeInstanceOf(JevRequestError);
+    expect(attempts()).toBe(2);
+  });
+
+  it('lets an interrupted wait end the compaction', async () => {
+    const { asker } = flaky([new JevRequestError(429, '')]);
+    const stop = new Error('interrupted');
+    await expect(
+      compact(transcript(), asker, { preserveRecentMessages: 1, sleep: async () => { throw stop; } }),
+    ).rejects.toBe(stop);
+  });
+
+  it('keeps a failed batch whole under onBatchFailure keep', async () => {
+    const failures = Array.from({ length: 3 }, () => new JevRequestError(500, 'down'));
+    const { asker } = flaky(failures);
+    const output = await compact(transcript(), asker, {
+      preserveRecentMessages: 1,
+      onBatchFailure: 'keep',
+      sleep: noWait,
+    });
+    expect(output.stats.failedBatches).toBe(1);
+    expect(output.stats.retries).toBe(2);
+    expect(output.messages).toEqual(transcript());
+  });
+
+  it('still throws under keep for a failure that is not transient or a bad answer', async () => {
+    const failure = new JevRequestError(401, 'unauthorized');
+    const { asker } = flaky([failure]);
+    await expect(
+      compact(transcript(), asker, { preserveRecentMessages: 1, onBatchFailure: 'keep', sleep: noWait }),
+    ).rejects.toBe(failure);
   });
 });

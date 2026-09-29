@@ -119,7 +119,35 @@ export interface CompactOptions {
   maxConcurrentRequests?: number;
   /** Characters of a dropped tool result to retain. Default 300. */
   truncateHeadChars?: number;
+  /**
+   * Further attempts for one request after a transient failure (429, 5xx, or
+   * a `JevTransportError`). Default 2. Anything else (other 4xx, a malformed
+   * body, a missing key, a timeout, an abort) fails at once.
+   */
+  retries?: number;
+  /** Wait before the first retry, tripled on each further one. Default 500. */
+  retryDelayMs?: number;
+  /**
+   * What to do with a batch that still fails after its retries. `throw` (the
+   * default) rejects the whole compaction, so the caller can fall back; `keep`
+   * leaves every call of that batch untouched, applies the other batches'
+   * answers and counts it in `stats.failedBatches`. `keep` covers a transient
+   * failure that outlived its retries and a malformed answer; anything else
+   * throws in both modes.
+   */
+  onBatchFailure?: BatchFailurePolicy;
+  /**
+   * Waits between retries. Defaults to `globalThis.setTimeout`; a host without
+   * one (a Claude Code hooks module) passes its own clock.
+   */
+  sleep?: Sleep;
 }
+
+/** `throw` rejects the compaction on a failed batch; `keep` leaves that batch's calls whole. */
+export type BatchFailurePolicy = 'throw' | 'keep';
+
+/** Resolves once `ms` milliseconds have passed; may reject to interrupt the wait. */
+export type Sleep = (ms: number) => Promise<void>;
 
 export interface ResolvedCompactOptions {
   goal: string;
@@ -130,6 +158,10 @@ export interface ResolvedCompactOptions {
   maxRequestTokens: number;
   maxConcurrentRequests: number;
   truncateHeadChars: number;
+  retries: number;
+  retryDelayMs: number;
+  onBatchFailure: BatchFailurePolicy;
+  sleep: Sleep;
 }
 
 export interface CompactResult {
@@ -152,6 +184,10 @@ export interface CompactResult {
     /** Which fitting stage the state needed, '' when no request was made. */
     stateStage: string;
     requests: number;
+    /** Retries spent across all requests, including by batches that then failed. */
+    retries: number;
+    /** Batches kept whole under `onBatchFailure: 'keep'`. */
+    failedBatches: number;
     ms: number;
   };
 }

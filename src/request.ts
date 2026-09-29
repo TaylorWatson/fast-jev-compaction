@@ -39,6 +39,69 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
+/**
+ * Every failure a Jev call can raise. `retryable` is the one place that says
+ * whether another attempt could help; a plain `Error` from elsewhere never is.
+ */
+export abstract class JevError extends Error {
+  constructor(message: string, name: string) {
+    super(message);
+    this.name = name;
+  }
+  get retryable(): boolean {
+    return false;
+  }
+}
+
+/** A non-2xx answer from the endpoint; `status` decides whether a retry makes sense. */
+export class JevRequestError extends JevError {
+  readonly status: number;
+  readonly body: string;
+  constructor(status: number, body: string, message?: string) {
+    super(message ?? `Jev request failed (${status}): ${body.slice(0, 200)}`, 'JevRequestError');
+    this.status = status;
+    this.body = body;
+  }
+  /** 429 and 5xx are transient by contract; anything else is the request's fault. */
+  override get retryable(): boolean {
+    return this.status === 429 || this.status >= 500;
+  }
+}
+
+/** The caller gave up, or the URL itself is wrong: neither is the network's fault. */
+function permanentTransportFailure(cause: unknown): boolean {
+  if (!isRecord(cause)) return false;
+  const message = typeof cause.message === 'string' ? cause.message : '';
+  return (
+    cause.name === 'AbortError' ||
+    cause.code === 'ERR_INVALID_URL' ||
+    /invalid url|failed to parse url/i.test(message)
+  );
+}
+
+/**
+ * The transport failed before any status came back (DNS, TLS, a dropped
+ * connection); retried like a 5xx. The built-in transports wrap a throwing
+ * fetch in one; a custom `JevAsker` throws it to opt a failure into retries.
+ */
+export class JevTransportError extends JevError {
+  override readonly cause: unknown;
+  constructor(cause: unknown) {
+    super(`Jev transport failed: ${cause instanceof Error ? cause.message : String(cause)}`, 'JevTransportError');
+    this.cause = cause;
+  }
+  override get retryable(): boolean {
+    return !permanentTransportFailure(this.cause);
+  }
+}
+
+/** A 2xx answer whose body is not a valid Jev response; never retried. */
+export class JevResponseError extends JevError {
+  constructor(message: string) {
+    super(message, 'JevResponseError');
+  }
+}
+
 /** Validates a Jev response body; throws on anything but an `answers` object. */
 export function parseJevResponse(
   status: number,
@@ -50,20 +113,22 @@ export function parseJevResponse(
       status === 403 &&
       /<\s*(?:!doctype\s+html|html)\b/i.test(text.slice(0, 1024))
     ) {
-      throw new Error(
+      throw new JevRequestError(
+        status,
+        text,
         'Jev request failed (403): the endpoint returned an HTML error page; a web firewall or proxy may be blocking this request',
       );
     }
-    throw new Error(`Jev request failed (${status}): ${text.slice(0, 200)}`);
+    throw new JevRequestError(status, text);
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
   } catch {
-    throw new Error('Jev returned malformed JSON');
+    throw new JevResponseError('Jev returned malformed JSON');
   }
   if (!isRecord(parsed) || !isRecord(parsed.answers)) {
-    throw new Error('Jev response is missing answers');
+    throw new JevResponseError('Jev response is missing answers');
   }
   return parsed as JevResponse;
 }
@@ -84,7 +149,7 @@ export function noulAnswer(
     !Number.isFinite(answer.noul) ||
     answer.noul < 0 || answer.noul > 1
   ) {
-    throw new Error(`Invalid Jev answer for ${name}`);
+    throw new JevResponseError(`Invalid Jev answer for ${name}`);
   }
   return answer.noul;
 }
