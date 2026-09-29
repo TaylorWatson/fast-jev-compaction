@@ -118,7 +118,11 @@ export interface CompactOptions {
   preserveRecentMessages?: number;
   /** Estimated token ceiling for the state. Default 25000. */
   maxStateTokens?: number;
-  /** Estimated token ceiling for state plus one batch of questions. Default 30000. */
+  /**
+   * Estimated token ceiling for state plus one batch of questions. Default 60000,
+   * under Jev's 64k request limit; the state is also fitted so it plus the
+   * longest question stays under Jev's separate 32k limit.
+   */
   maxRequestTokens?: number;
   /** Maximum concurrent Jev requests. Default 4. Already-running requests settle on failure. */
   maxConcurrentRequests?: number;

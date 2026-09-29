@@ -44,7 +44,7 @@ export const DEFAULT_OPTIONS: ResolvedCompactOptions = {
   keepCallThreshold: 0.05,
   preserveRecentMessages: 6,
   maxStateTokens: 25_000,
-  maxRequestTokens: 30_000,
+  maxRequestTokens: 60_000,
   maxConcurrentRequests: 4,
   truncateHeadChars: 300,
   retries: 2,
@@ -55,6 +55,14 @@ export const DEFAULT_OPTIONS: ResolvedCompactOptions = {
 
 /** Tokens the request envelope (`model`, key names) adds around state and questions. */
 const REQUEST_OVERHEAD_TOKENS = 20;
+
+/**
+ * Jev's second context limit: the state plus the single longest question must
+ * fit this, independently of the whole-request budget. See
+ * https://docs.typesafe.ai/models ("64k tokens per request; 32k tokens for
+ * `state` plus the longest question").
+ */
+const MAX_STATE_PLUS_QUESTION_TOKENS = 32_000;
 
 /** A timer where the host has one; no wait at all where it does not. */
 function defaultSleep(ms: number): Promise<void> {
@@ -151,6 +159,12 @@ export function batchCalls(
   let currentTokens = 0;
   for (const call of calls) {
     const tokens = estimateTokens(JSON.stringify(questionsFor(call)));
+    if (stateTokens + tokens + REQUEST_OVERHEAD_TOKENS > MAX_STATE_PLUS_QUESTION_TOKENS) {
+      throw new Error(
+        `state plus one question exceeds Jev's ${MAX_STATE_PLUS_QUESTION_TOKENS}-token limit ` +
+          `(~${stateTokens} state + ~${tokens} question); lower maxStateTokens`,
+      );
+    }
     if (current.length > 0 && currentTokens + tokens > budget) {
       batches.push(current);
       current = [];
@@ -459,7 +473,10 @@ export async function compact(
     const largestQuestion = candidates.reduce((largest, call) => Math.max(
       largest, estimateTokens(JSON.stringify(questionsFor(call))),
     ), 0);
-    const stateBudget = resolved.maxRequestTokens - REQUEST_OVERHEAD_TOKENS - largestQuestion;
+    const stateBudget =
+      Math.min(resolved.maxRequestTokens, MAX_STATE_PLUS_QUESTION_TOKENS) -
+      REQUEST_OVERHEAD_TOKENS -
+      largestQuestion;
     if (stateBudget < 1) throw new Error('request budget leaves no room for state and questions');
     const state = fitState(messages, calls, {
       ...resolved,

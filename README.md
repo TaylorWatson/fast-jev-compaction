@@ -59,9 +59,10 @@ session data you are authorized to send to that endpoint.
    **result** stay verbatim (its contents are still needed and re-running the
    tool would not do).
 5. Questions are split into as many requests as needed so state plus questions
-   stays under `maxRequestTokens` (30k by default). Jev 1.13 currently documents
+   stays under `maxRequestTokens` (60k by default). Jev 1.13 currently documents
    64k tokens for the whole request and 32k for `state` plus the longest
-   question; the default stays under both. The same full state is resent with
+   question; the state is fitted so it plus the longest question stays under
+   32k, and the default request budget stays under 64k. The same full state is resent with
    every request; requests run concurrently and their answers are merged.
 6. Decisions per call. The result is gated by `keepThreshold`, the call by its
    own, much lower `keepCallThreshold`:
@@ -147,7 +148,7 @@ put it in a source file.
 | `keepCallThreshold` | `0.05` | Minimum keep probability for the tool *call* to stay; below it the call goes with its result |
 | `preserveRecentMessages` | `6` | Newest messages never touched (the first is always kept) |
 | `maxStateTokens` | `25000` | Estimated token ceiling for the state |
-| `maxRequestTokens` | `30000` | Estimated ceiling for state plus one batch of questions |
+| `maxRequestTokens` | `60000` | Estimated ceiling for state plus one batch of questions |
 | `truncateHeadChars` | `300` | Characters of a dropped tool result retained before its note |
 | `retries` | `2` | Further attempts per request after a 429, a 5xx or a `JevTransportError`; nothing else is retried |
 | `retryDelayMs` | `500` | Wait before the first retry, tripled on each further one |

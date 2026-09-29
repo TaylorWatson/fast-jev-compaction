@@ -84,7 +84,7 @@ describe('options', () => {
       keepThreshold: 0.15,
       preserveRecentMessages: 6,
       maxStateTokens: 25_000,
-      maxRequestTokens: 30_000,
+      maxRequestTokens: 60_000,
       truncateHeadChars: 300,
     });
     expect(resolveOptions({
@@ -760,5 +760,44 @@ describe('archiving truncated results', () => {
     const shortCalls = collectToolCalls(short, 0);
     applyDecisions(short, shortCalls.map((c) => decideCall(c, { keepCall: 1, keepResult: 0 }, resolveOptions())), shortCalls, 300, archive);
     expect(archived).toEqual([]);
+  });
+});
+
+describe('jev context limits', () => {
+  const candidate = (id: string): ToolCall => ({
+    id,
+    tool_use_id: `toolu_${id}`,
+    tool: 'Read',
+    input: { file_path: 'src/a.ts' },
+    callIndex: 1,
+    resultIndex: 2,
+    resultChars: 100,
+    isError: false,
+    pinned: false,
+  });
+
+  it('fits more calls per request under the 60k default than under 30k', () => {
+    const calls = Array.from({ length: 90 }, (_, i) => candidate(`t${i + 1}`));
+    const wide = batchCalls(calls, 25_000, resolveOptions());
+    const narrow = batchCalls(calls, 25_000, { maxRequestTokens: 30_000 });
+    expect(wide.length).toBeLessThan(narrow.length);
+  });
+
+  it('rejects a state that leaves no room for a single question under 32k', () => {
+    expect(() => batchCalls([candidate('t1')], 31_990, { maxRequestTokens: 60_000 })).toThrow(
+      /state plus one question/,
+    );
+  });
+
+  it('fits the state under 32k even when maxStateTokens is set higher', async () => {
+    const seen: Seen[] = [];
+    const messages = transcript();
+    messages.splice(1, 0, message('assistant', 'word '.repeat(60_000)));
+    await compact(messages, fakeJev(() => 0.9, seen), {
+      preserveRecentMessages: 1,
+      maxStateTokens: 50_000,
+    });
+    const tokens = estimateTokens(JSON.stringify(seen[0]!.state));
+    expect(tokens).toBeLessThan(32_000);
   });
 });

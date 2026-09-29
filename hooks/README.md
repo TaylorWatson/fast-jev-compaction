@@ -64,7 +64,7 @@ The plugin declares these `userConfig` values in
 | `minReductionRatio` | `0.25` |
 | `builtinFallback` | `auto` |
 | `maxStateTokens` | `25000` |
-| `maxRequestTokens` | `30000` |
+| `maxRequestTokens` | `60000` |
 | `truncateHeadChars` | `300` |
 | `retries` | `2` |
 | `retryDelayMs` | `500` |
