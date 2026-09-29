@@ -168,8 +168,12 @@ other batches' answers apply.
 
 ## Install and usage
 
+This fork is not published to npm; `npm install fast-jev-compaction` installs
+the original package, without these changes. Install from GitHub instead
+(the package builds itself on install):
+
 ```sh
-npm install fast-jev-compaction
+npm install github:TaylorWatson/fast-jev-compaction
 export TYPESAFE_API_KEY=...
 ```
 
