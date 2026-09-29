@@ -1,5 +1,7 @@
 # fast-jev-compaction
 
+## this project is just the main repo with all PR's reviewed and merged. I will be accepting most PR's after reviewed and will keep this fork maintained.
+
 Claude Code plugin that replaces the compaction summary with Jev decisions:
 every tool call and result is scored in one fast request, stale ones are
 dropped or truncated, everything kept stays verbatim. Also usable as an npm
